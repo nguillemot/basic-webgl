@@ -1,5 +1,7 @@
 WebGLBasicTest = { };
 
+WebGLBasicTest.debugMode = false;
+
 WebGLBasicTest.onLoad = function () {  
     try {
         WebGLBasicTest.init();
@@ -11,26 +13,35 @@ WebGLBasicTest.onLoad = function () {
 
 WebGLBasicTest.init = function () {
     var canvas, gl, scene;
+    var contextAttributes;
     
     canvas = document.getElementById("glcanvas");
     if (!canvas) {
         throw "Failed to find glcanvas";
     }
     
-    gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+    contextAttributes = {
+        depth : false,
+    };
+    
+    gl = canvas.getContext("webgl", contextAttributes) ||
+         canvas.getContext("experimental-webgl", contextAttributes);
     if (!gl) {
         throw "Unable to initialize WebGL. Your browser may not support it.";
     }
     
-    // TODO: Do only in debug mode... somehow.
-    gl = WebGLDebugUtils.makeDebugContext(gl, function (err, funcName, args) {
-        throw WebGLDebugUtils.glEnumToString(err) + " was caused by call to: " + funcName;
-    });
+    if (WebGLBasicTest.debugMode) {
+        gl = WebGLDebugUtils.makeDebugContext(gl, function (err, funcName, args) {
+            throw WebGLDebugUtils.glEnumToString(err) + " was caused by call to: " + funcName;
+        });
+    }
     
     scene = WebGLBasicTest.createScene(canvas, gl);
 
     setInterval(function() {
-        WebGLBasicTest.updateScene(scene);
+        var currentTime = Date.now();
+        
+        WebGLBasicTest.updateScene(scene, currentTime);
         WebGLBasic.interpretPasses(scene.interpreter, scene.passes);
     }, 1000/60);
 };
@@ -43,10 +54,12 @@ WebGLBasicTest.createScene = function (canvas, gl) {
         gl : gl
     };
     
-    scene.psos = WebGLBasicTest.createScenePipelineStates(scene);
-    scene.nodes = WebGLBasicTest.createSceneNodes(scene);
-    scene.camera = WebGLBasicTest.createSceneCamera(scene);
-    scene.passes = WebGLBasicTest.createScenePasses(scene);
+    scene.targets = WebGLBasicTest.createTargets(gl, canvas.width, canvas.height);
+    scene.samplers = WebGLBasicTest.createSamplers(gl);
+    scene.psos = WebGLBasicTest.createPipelineStates(gl);
+    scene.nodes = WebGLBasicTest.createNodes(gl);
+    scene.camera = WebGLBasicTest.createCamera();
+    scene.passes = WebGLBasicTest.createPasses(scene);
     scene.interpreter = WebGLBasic.createInterpreter(gl);
     
     WebGLBasic.buildPipelineStates(gl, scene.psos);
@@ -54,105 +67,157 @@ WebGLBasicTest.createScene = function (canvas, gl) {
     return scene;
 };
 
-WebGLBasicTest.createScenePipelineStates = function (scene) {
-    var gl;
+WebGLBasicTest.createTargets = function (gl, width, height) {
+    var targets;
+    var framebufferStatus;
+    
+    targets = { };
+    
+    targets.color = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, targets.color);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    
+    targets.depth = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, targets.depth);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
+    
+    targets.scenePassFBO = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targets.scenePassFBO);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, targets.color, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, targets.depth);
+    framebufferStatus = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (framebufferStatus !== gl.FRAMEBUFFER_COMPLETE) {
+        throw "checkFramebufferStatus failed: " + WebGLDebugUtils.glEnumToString(framebufferStatus);
+    }
+    
+    return targets;
+};
+
+WebGLBasicTest.createSamplers = function (gl) {
+    var samplers;
+    
+    samplers = { };
+    
+    samplers.blit = {
+        minFilter : gl.NEAREST,
+        magFilter : gl.LINEAR,
+        wrapS : gl.CLAMP_TO_EDGE,
+        wrapT : gl.CLAMP_TO_EDGE
+    };
+    
+    return samplers;
+};
+
+WebGLBasicTest.createPipelineStates = function (gl) {
     var psos;
-    var sceneVS, sceneFS;
-    
-    gl = scene.gl;
-    
+        
     psos = { };
     
-    psos.scene = { };
-    
-    psos.scene.rootSignature = {
-        rootParameters : {
-            MODELWORLD : {
-                type : "uniform",
-                rootParameterSlot : 0
-            },
-            WORLDVIEW : {
-                type : "uniform",
-                rootParameterSlot : 1
-            },
-            VIEWPROJECTION : {
-                type : "uniform",
-                rootParameterSlot : 2
-            },
-            COLOR : {
-                type : "uniform",
-                rootParameterSlot : 3
+    psos.scene = {     
+        rootSignature : {
+            rootParameters : {
+                MODELWORLD : {
+                    type : "uniform",
+                    rootParameterSlot : 0
+                },
+                WORLDVIEW : {
+                    type : "uniform",
+                    rootParameterSlot : 1
+                },
+                VIEWPROJECTION : {
+                    type : "uniform",
+                    rootParameterSlot : 2
+                },
+                COLOR : {
+                    type : "uniform",
+                    rootParameterSlot : 3
+                }
+            }
+        },
+        vs :  "uniform highp mat4 MODELWORLD;\n" +
+              "uniform highp mat4 WORLDVIEW;\n" +
+              "uniform highp mat4 VIEWPROJECTION;\n" +
+              "attribute highp vec3 POSITION;\n" +
+              "void main() {\n" +
+              "    mat4 modelViewProjection = VIEWPROJECTION * WORLDVIEW * MODELWORLD;\n" +
+              "    gl_Position = modelViewProjection * vec4(POSITION, 1.0);\n" +
+              "}\n",
+        fs : "uniform lowp vec4 COLOR;\n" +
+             "void main() {\n" +
+             "    gl_FragColor = vec4((gl_FragCoord.z * gl_FragCoord.w * COLOR.rgb), 1.0);\n" +
+             "}\n",
+        depthStencilState : {
+            depthEnable : true,
+            depthFunc : gl.LEQUAL
+        },
+        inputLayout : {
+            POSITION : {
+                inputSlot : 0,
+                size : 3,
+                type : gl.FLOAT,
+                normalized : false,
+                stride : 0,
+                offset : 0
             }
         }
     };
     
-    sceneVS = "" +
-        "attribute highp vec3 POSITION;\n" +
-        "uniform highp mat4 MODELWORLD;\n" +
-        "uniform highp mat4 WORLDVIEW;\n" +
-        "uniform highp mat4 VIEWPROJECTION;\n" +
-        "void main() {\n" +
-        "    mat4 modelViewProjection = VIEWPROJECTION * WORLDVIEW * MODELWORLD;\n" +
-        "    gl_Position = modelViewProjection * vec4(POSITION, 1.0);\n" +
-        "}\n";
-    
-    sceneFS = "" +
-        "uniform lowp vec4 COLOR;\n" +
-        "void main() {\n" +
-        "    gl_FragColor = vec4((gl_FragCoord.z * gl_FragCoord.w * COLOR.rgb), 1.0);\n" +
-        "}\n";
-            
-    psos.scene.vs = gl.createShader(gl.VERTEX_SHADER);
-    gl.shaderSource(psos.scene.vs, sceneVS);
-    gl.compileShader(psos.scene.vs);
-    if (!gl.getShaderParameter(psos.scene.vs, gl.COMPILE_STATUS)) {
-        throw "Error compiling sceneVS: " + gl.getShaderInfoLog(psos.scene.vs);
-    }
-    
-    psos.scene.fs = gl.createShader(gl.FRAGMENT_SHADER);
-    gl.shaderSource(psos.scene.fs, sceneFS);
-    gl.compileShader(psos.scene.fs);
-    if (!gl.getShaderParameter(psos.scene.fs, gl.COMPILE_STATUS)) {
-        throw "Error compiling sceneFS: " + gl.getShaderInfoLog(psos.scene.fs);
-    }
-    
-    psos.scene.program = gl.createProgram();
-    gl.attachShader(psos.scene.program, psos.scene.vs);
-    gl.attachShader(psos.scene.program, psos.scene.fs);
-    gl.linkProgram(psos.scene.program);
-    if (!gl.getProgramParameter(psos.scene.program, gl.LINK_STATUS)) {
-        throw "Error linking scene program: " + gl.getProgramInfoLog(psos.scene.program);
-    }
-    
-    psos.scene.depthStencilState = {
-        depthEnable : true,
-        depthFunc : gl.LEQUAL
-    };
-    
-    psos.scene.inputLayout = {
-        POSITION : {
-            inputSlot : 0,
-            size : 3,
-            type : gl.FLOAT,
-            normalized : false,
-            stride : 0,
-            offset : 0
+    psos.blit = {
+        rootSignature : {
+            rootParameters : {
+                BLITSAMPLER : {
+                    type : "sampler",
+                    rootParameterSlot : 0
+                }
+            }
         },
+        vs : "attribute lowp vec2 POSITION;\n" +
+             "attribute lowp vec2 TEXCOORD;\n" +
+             "varying lowp vec2 vTexCoord;\n" +
+             "void main() {\n" +
+             "    gl_Position = vec4(POSITION, 0.0, 1.0);\n" +
+             "    vTexCoord = TEXCOORD;\n" +
+             "}\n",
+        fs : "uniform sampler2D BLITSAMPLER;\n" +
+             "varying lowp vec2 vTexCoord;\n" +
+             "void main() {\n" +
+             "    gl_FragColor = texture2D(BLITSAMPLER, vTexCoord);\n" +
+             "}\n",
+        inputLayout : {
+            POSITION : {
+                inputSlot : 0,
+                size : 2,
+                type : gl.FLOAT,
+                normalized : false,
+                stride : 16,
+                offset : 0
+            },
+            TEXCOORD : {
+                inputSlot : 0,
+                size: 2,
+                type : gl.FLOAT,
+                normalized : false,
+                stride : 16,
+                offset : 8
+            }
+        }
     };
         
     return psos;
 }
 
-WebGLBasicTest.createSceneNodes = function (scene) {
-    var gl;
+WebGLBasicTest.createNodes = function (gl) {
     var nodes;
     var cubeVertices, cubeIndices;
-    
-    gl = scene.gl;
+    var floorVertices;
+    var blitVertices;
     
     nodes = { };
     
-    cubeVertices = [
+    cubeVertices = new Float32Array([
         +1.0, +1.0, +1.0, // 0
         +1.0, +1.0, -1.0, // 1
         +1.0, -1.0, +1.0, // 2
@@ -161,9 +226,9 @@ WebGLBasicTest.createSceneNodes = function (scene) {
         -1.0, +1.0, -1.0, // 5
         -1.0, -1.0, +1.0, // 6
         -1.0, -1.0, -1.0, // 7
-    ];
+    ]);
     
-    cubeIndices = [
+    cubeIndices = new Uint16Array([
         0, 2, 1,
         1, 2, 3,
         3, 2, 7,
@@ -176,21 +241,38 @@ WebGLBasicTest.createSceneNodes = function (scene) {
         1, 4, 0,
         1, 3, 5,
         5, 3, 7
-    ];
+    ]);
+    
+    floorVertices = new Float32Array([
+        +1.0, +1.0, 0.0,
+        -1.0, +1.0, 0.0,
+        +1.0, -1.0, 0.0,
+        +1.0, -1.0, 0.0,
+        -1.0, +1.0, 0.0,
+        -1.0, -1.0, 0.0
+    ]);
+    
+    blitVertices = new Float32Array([
+    //  position2D      texcoord
+        +1.0, +1.0,     1.0, 1.0,
+        -1.0, +1.0,     0.0, 1.0,
+        +1.0, -1.0,     1.0, 0.0,
+        -1.0, -1.0,     0.0, 0.0
+    ]);
     
     nodes.cube = { };
     
     nodes.cube.vbo = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, nodes.cube.vbo);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(cubeVertices), gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, cubeVertices, gl.STATIC_DRAW);
     
     nodes.cube.ebo = gl.createBuffer();
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, nodes.cube.ebo);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(cubeIndices), gl.STATIC_DRAW);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, cubeIndices, gl.STATIC_DRAW);
     
-    nodes.cube.vertexBufferViews = [
-        { buffer : nodes.cube.vbo, inputSlot : 0 }
-    ];
+    nodes.cube.vertexBufferViews = {
+        0 : { buffer : nodes.cube.vbo }
+    };
     
     nodes.cube.indexBufferView = {
         buffer : nodes.cube.ebo,
@@ -200,65 +282,135 @@ WebGLBasicTest.createSceneNodes = function (scene) {
     
     nodes.cube.drawIndexedArgs = {
         primitiveTopology : gl.TRIANGLES,
-        indexCountPerInstance : cubeIndices.length,
+        indexCountPerInstance : 36,
         startIndexLocation : 0,
+    };
+    
+    nodes.cube.transform = new Float32Array(WebGLBasic.makeTranslate4x4(0,0,1));
+    
+    nodes.floor = { };
+    nodes.floor.vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, nodes.floor.vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, floorVertices, gl.STATIC_DRAW);
+    
+    nodes.floor.vertexBufferViews = {
+        0 : { buffer : nodes.floor.vbo }
+    };
+    
+    nodes.floor.drawArgs = {
+        primitiveTopology : gl.TRIANGLES,
+        vertexCountPerInstance : 6,
+        startVertexLocation : 0,
+    };
+    
+    nodes.floor.transform = new Float32Array(WebGLBasic.makeScale4x4(3,3,1));
+    
+    nodes.blit = { };
+    nodes.blit.vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, nodes.blit.vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, blitVertices, gl.STATIC_DRAW);
+    
+    nodes.blit.vertexBufferViews = {
+        0 : { buffer : nodes.blit.vbo }
+    };
+    
+    nodes.blit.drawArgs = {
+        primitiveTopology : gl.TRIANGLE_STRIP,
+        vertexCountPerInstance : 4,
+        startVertexLocation : 0
     };
     
     return nodes;
 };
 
-WebGLBasicTest.createSceneCamera = function (scene) {
+WebGLBasicTest.createCamera = function () {
     var camera;
         
     camera = { };
     
-    camera.WorldView = new Float32Array(WebGLBasic.makeIdentity4x4());
-    camera.ViewProjection = new Float32Array(WebGLBasic.makeIdentity4x4());
+    camera.worldPosition = [4,4,4];
+    camera.worldView = new Float32Array(WebGLBasic.makeIdentity4x4());
+    camera.viewProjection = new Float32Array(WebGLBasic.makeIdentity4x4());
     
     return camera;
 };
 
-WebGLBasicTest.createScenePasses = function (scene) {
-    var passes;
+WebGLBasicTest.createPasses = function (scene) {
+    var gl;
     var scenePass;
+    var blitPass;
     
-    passes = [ ];
+    gl = scene.gl;
     
     scenePass = {
         commandList : [
+            [ "setFramebuffer", scene.targets.scenePassFBO ],
             [ "clearColor", [1.0, 1.0, 1.0, 1.0] ],
             [ "clearDepth", 1.0 ],
             [ "setPipelineState", scene.psos.scene ],
             [ "setRootUniforms", {
-                1 : scene.camera.WorldView,
-                2 : scene.camera.ViewProjection,
+                1 : scene.camera.worldView,
+                2 : scene.camera.viewProjection,
                 3 : new Float32Array([0.0, 0.0, 1.0, 1.0])
             }],
             [ "setRootUniforms", {
-                0 : new Float32Array([1,0,0,0
-                                     ,0,1,0,0
-                                     ,0,0,1,0
-                                     ,0,0,0,1])
+                0 : scene.nodes.cube.transform
             }],
             [ "drawNodes", [ scene.nodes.cube ] ],
+            [ "setRootUniforms", {
+                0 : scene.nodes.floor.transform,
+                3 : new Float32Array([0.5, 0.5, 0.5, 1.0])
+            }],
+            [ "drawNodes", [ scene.nodes.floor ] ],
         ]
     };
     
-    passes.push(scenePass);
+    blitPass = {
+        commandList : [
+            [ "setFramebuffer", null ],
+            [ "setPipelineState", scene.psos.blit ],
+            [ "setActiveTextures", {
+                0 : {
+                    target : gl.TEXTURE_2D,
+                    texture : scene.targets.color,
+                    sampler :  scene.samplers.blit
+                }
+            }],
+            [ "setRootSamplers", {
+                0 : 0
+            }],
+            [ "drawNodes", [ scene.nodes.blit ] ]
+        ]
+    };
     
-    return passes;
+    return [
+        scenePass,
+        blitPass
+    ];
 };
 
-WebGLBasicTest.updateScene = function (scene) {
+WebGLBasicTest.updateScene = function (scene, currentTime) {
     var canvas;
     var camera;
+    var dtms, dt;
+    var camRotate;
     var fovy;
     
     canvas = scene.canvas;
     camera = scene.camera;
     
-    camera.WorldView.set(WebGLBasic.makeLookAt([3,3,3],[0,0,0],[0,0,1]));
+    dtms = 0;
+    if (scene.lastUpdateTime) {
+        dtms = currentTime - scene.lastUpdateTime;
+    }
+    scene.lastUpdateTime = currentTime;
+    dt = dtms / 1000.0;
     
-    fovy = 70.0 * Math.PI / 180.0;
-    camera.ViewProjection.set(WebGLBasic.makePerspective(fovy, canvas.width / canvas.height, 0.1, 1000.0));
+    camRotate = WebGLBasic.makeRotate3x3(WebGLBasic.degToRad(dt * 90), [0,0,1]);
+    camera.worldPosition = WebGLBasic.multMat3Vec3(camRotate, camera.worldPosition);
+    
+    camera.worldView.set(WebGLBasic.makeLookAt(camera.worldPosition,[0,0,0],[0,0,1]));
+    
+    fovy = WebGLBasic.degToRad(70.0);
+    camera.viewProjection.set(WebGLBasic.makePerspective(fovy, canvas.width / canvas.height, 0.1, 1000.0));
 };

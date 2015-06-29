@@ -5,92 +5,264 @@ var WebGLBasic = {};
 WebGLBasic.buildPipelineStates = function (gl, psos) {
     Object.keys(psos).forEach(function (psoName) {
         var pso;
-        var vs, fs;
-        var activeAttributeIndex, activeAttribute, attributeLocation;
-        var activeUniformIndex, activeUniform, uniformLocation;
 
         pso = psos[psoName];
 
-        vs = gl.createShader(gl.VERTEX_SHADER);
-        gl.shaderSource(vs, pso.vs);
-        gl.compileShader(vs);
-        if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
-            throw "Error compiling vertex shader: " + gl.getShaderInfoLog(vs);
+        if (pso.wasBuilt) {
+            throw "Pipeline state object " + psoName + " has already been built once.";
         }
 
-        fs = gl.createShader(gl.FRAGMENT_SHADER);
-        gl.shaderSource(fs, pso.fs);
-        gl.compileShader(fs);
-        if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
-            throw "Error compiling fragment shader: " + gl.getShaderInfoLog(fs);
-        }
+        // Program compilation
+        (function () {
+            var vs, fs;
 
-        pso.program = gl.createProgram();
-        gl.attachShader(pso.program, vs);
-        gl.attachShader(pso.program, fs);
-        gl.linkProgram(pso.program);
-        if (!gl.getProgramParameter(pso.program, gl.LINK_STATUS)) {
-            throw "Error linking program: " + gl.getProgramInfoLog(pso.program);
-        }
+            // Compile vertex shader
+            if (!pso.vs) {
+                throw "Pipeline state objects must have a vertex shader.";
+            }
 
-        pso.attributes = {};
-        activeAttributeIndex = gl.getProgramParameter(pso.program, gl.ACTIVE_ATTRIBUTES) - 1;
-        while (activeAttributeIndex >= 0) {
-            activeAttribute = gl.getActiveAttrib(pso.program, activeAttributeIndex);
-            attributeLocation = gl.getAttribLocation(pso.program, activeAttribute.name);
-            pso.attributes[activeAttribute.name] = {
-                name: activeAttribute.name,
-                size: activeAttribute.size,
-                type: activeAttribute.type,
-                location: attributeLocation
-            };
-            activeAttributeIndex -= 1;
-        }
+            vs = gl.createShader(gl.VERTEX_SHADER);
+            gl.shaderSource(vs, pso.vs);
+            gl.compileShader(vs);
+            if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+                throw "Error compiling vertex shader: " + gl.getShaderInfoLog(vs);
+            }
 
-        pso.attributeLocationsForInputSlot = {};
-        pso.attributeLocationToAttribute = {};
-        if (pso.inputLayout) {
+            // Compile fragment shader
+            if (!pso.fs) {
+                throw "Pipeline state objects must have a fragment shader.";
+            }
+
+            fs = gl.createShader(gl.FRAGMENT_SHADER);
+            gl.shaderSource(fs, pso.fs);
+            gl.compileShader(fs);
+            if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+                throw "Error compiling fragment shader: " + gl.getShaderInfoLog(fs);
+            }
+
+            // Link program
+            pso.program = gl.createProgram();
+            gl.attachShader(pso.program, vs);
+            gl.attachShader(pso.program, fs);
+            gl.linkProgram(pso.program);
+            if (!gl.getProgramParameter(pso.program, gl.LINK_STATUS)) {
+                throw "Error linking program: " + gl.getProgramInfoLog(pso.program);
+            }
+        }());
+
+        // Query all the active attributes from the program.
+        (function () {
+            var activeAttributeIndex, activeAttribute, attributeLocation;
+
+            pso.attributes = {};
+            activeAttributeIndex = gl.getProgramParameter(pso.program, gl.ACTIVE_ATTRIBUTES) - 1;
+            while (activeAttributeIndex >= 0) {
+                activeAttribute = gl.getActiveAttrib(pso.program, activeAttributeIndex);
+                attributeLocation = gl.getAttribLocation(pso.program, activeAttribute.name);
+                pso.attributes[activeAttribute.name] = {
+                    name: activeAttribute.name,
+                    size: activeAttribute.size,
+                    type: activeAttribute.type,
+                    location: attributeLocation
+                };
+                activeAttributeIndex -= 1;
+            }
+        }());
+
+        // Parse input layout
+        (function () {
+            // Set up default input layout if missing
+            if (!pso.inputLayout) {
+                pso.inputLayout = {};
+            }
+
+            // Create mappings to set attributes faster later.
+            pso.attributeLocationsForInputSlot = {};
+            pso.attributeLocationToAttribute = {};
             Object.keys(pso.inputLayout).forEach(function (semanticName) {
                 var inputAttribute, inputAttributeLocation;
 
                 inputAttribute = pso.inputLayout[semanticName];
                 inputAttributeLocation = gl.getAttribLocation(pso.program, semanticName);
-                if (inputAttributeLocation !== -1) {
-                    if (!pso.attributeLocationsForInputSlot[inputAttribute.inputSlot]) {
-                        pso.attributeLocationsForInputSlot[inputAttribute.inputSlot] = [];
-                    }
-                    pso.attributeLocationsForInputSlot[inputAttribute.inputSlot].push(inputAttributeLocation);
-                    pso.attributeLocationToAttribute[inputAttributeLocation] = inputAttribute;
+
+                if (inputAttributeLocation === -1) {
+                    throw "Attribute " + semanticName + " could not be matched with the program.";
                 }
+
+                if (!pso.attributeLocationsForInputSlot[inputAttribute.inputSlot]) {
+                    pso.attributeLocationsForInputSlot[inputAttribute.inputSlot] = [];
+                }
+                pso.attributeLocationsForInputSlot[inputAttribute.inputSlot].push(inputAttributeLocation);
+                pso.attributeLocationToAttribute[inputAttributeLocation] = inputAttribute;
             });
-        }
+        }());
 
-        pso.uniforms = {};
-        activeUniformIndex = gl.getProgramParameter(pso.program, gl.ACTIVE_UNIFORMS) - 1;
-        while (activeUniformIndex >= 0) {
-            activeUniform = gl.getActiveUniform(pso.program, activeUniformIndex);
-            uniformLocation = gl.getUniformLocation(pso.program, activeUniform.name);
-            pso.uniforms[activeUniform.name] = {
-                name: activeUniform.name,
-                size: activeUniform.size,
-                type: activeUniform.type,
-                location: uniformLocation
-            };
-            activeUniformIndex -= 1;
-        }
+        // Query all the active uniforms from the program.
+        (function () {
+            var activeUniformIndex, activeUniform, uniformLocation;
 
-        pso.rootParameterSlotToUniform = {};
-        if (pso.rootSignature) {
+            pso.uniforms = {};
+            activeUniformIndex = gl.getProgramParameter(pso.program, gl.ACTIVE_UNIFORMS) - 1;
+            while (activeUniformIndex >= 0) {
+                activeUniform = gl.getActiveUniform(pso.program, activeUniformIndex);
+                uniformLocation = gl.getUniformLocation(pso.program, activeUniform.name);
+                pso.uniforms[activeUniform.name] = {
+                    name: activeUniform.name,
+                    size: activeUniform.size,
+                    type: activeUniform.type,
+                    location: uniformLocation
+                };
+                activeUniformIndex -= 1;
+            }
+        }());
+
+        // Parse root signature
+        (function () {
+            // Set up default root signature if missing
+            if (!pso.rootSignature) {
+                pso.rootSignature = {};
+            }
+            if (!pso.rootSignature.rootParameters) {
+                pso.rootSignature.rootParameters = {};
+            }
+
+            pso.rootParameterSlotToUniform = {};
             Object.keys(pso.rootSignature.rootParameters).forEach(function (rootParameterSlot) {
                 var rootParameter, rootParameterName;
                 var uniformInfo;
 
                 rootParameter = pso.rootSignature.rootParameters[rootParameterSlot];
                 rootParameterName = rootParameter.semanticName;
+
+                if (!rootParameterName) {
+                    throw "Root parameter " + rootParameterSlot + " is missing a semanticName";
+                }
+
                 uniformInfo = pso.uniforms[rootParameterName];
+
+                if (!uniformInfo) {
+                    throw "Root parameter " + rootParameterName + " could not be matched with the program.";
+                }
+
                 pso.rootParameterSlotToUniform[rootParameterSlot] = uniformInfo;
             });
+        }());
+
+        // Set up default rasterizer state if missing
+        if (!pso.rasterizerState) {
+            pso.rasterizerState = {};
         }
+        if (typeof(pso.rasterizerState.cullEnable) === 'undefined') {
+            pso.rasterizerState.cullEnable = false;
+        }
+        if (typeof(pso.rasterizerState.cullMode) === 'undefined') {
+            pso.rasterizerState.cullMode = gl.BACK;
+        }
+
+        // Set up default depth stencil state if missing
+        if (!pso.depthStencilState) {
+            pso.depthStencilState = {};
+        }
+        if (typeof(pso.depthStencilState.depthEnable) === 'undefined') {
+            pso.depthStencilState.depthEnable = false;
+        }
+        if (typeof(pso.depthStencilState.depthFunc) === 'undefined') {
+            pso.depthStencilState.depthFunc = gl.LESS;
+        }
+        if (typeof(pso.depthStencilState.depthMask) === 'undefined') {
+            pso.depthStencilState.depthMask = true;
+        }
+        if (typeof(pso.depthStencilState.stencilEnable) === 'undefined') {
+            pso.depthStencilState.stencilEnable = false;
+        }
+        if (typeof(pso.depthStencilState.stencilWriteMask) === 'undefined') {
+            pso.depthStencilState.stencilWriteMask = 0xFFFFFFFF;
+        }
+        if (!pso.depthStencilState.frontFace) {
+            pso.depthStencilState.frontFace = {};
+        }
+        if (typeof(pso.depthStencilState.frontFace.stencilFunc) === 'undefined') {
+            pso.depthStencilState.frontFace.stencilFunc = gl.ALWAYS;
+        }
+        if (typeof(pso.depthStencilState.frontFace.stencilRef) === 'undefined') {
+            pso.depthStencilState.frontFace.stencilRef = 0;
+        }
+        if (typeof(pso.depthStencilState.frontFace.stencilReadMask) === 'undefined') {
+            pso.depthStencilState.frontFace.stencilReadMask = 0xFFFFFFFF;
+        }
+        if (typeof(pso.depthStencilState.frontFace.stencilFailOp) === 'undefined') {
+            pso.depthStencilState.frontFace.stencilFailOp = gl.KEEP;
+        }
+        if (typeof(pso.depthStencilState.frontFace.stencilDepthFailOp) === 'undefined') {
+            pso.depthStencilState.frontFace.stencilDepthFailOp = gl.KEEP;
+        }
+        if (typeof(pso.depthStencilState.frontFace.stencilPassOp) === 'undefined') {
+            pso.depthStencilState.frontFace.stencilPassOp = gl.KEEP;
+        }
+        if (!pso.depthStencilState.backFace) {
+            pso.depthStencilState.backFace = {};
+        }
+        if (typeof(pso.depthStencilState.backFace.stencilFunc) === 'undefined') {
+            pso.depthStencilState.backFace.stencilFunc = gl.ALWAYS;
+        }
+        if (typeof(pso.depthStencilState.backFace.stencilRef) === 'undefined') {
+            pso.depthStencilState.backFace.stencilRef = 0;
+        }
+        if (typeof(pso.depthStencilState.backFace.stencilReadMask) === 'undefined') {
+            pso.depthStencilState.backFace.stencilReadMask = 0xFFFFFFFF;
+        }
+        if (typeof(pso.depthStencilState.backFace.stencilFailOp) === 'undefined') {
+            pso.depthStencilState.backFace.stencilFailOp = gl.KEEP;
+        }
+        if (typeof(pso.depthStencilState.backFace.stencilDepthFailOp) === 'undefined') {
+            pso.depthStencilState.backFace.stencilDepthFailOp = gl.KEEP;
+        }
+        if (typeof(pso.depthStencilState.backFace.stencilPassOp) === 'undefined') {
+            pso.depthStencilState.backFace.stencilPassOp = gl.KEEP;
+        }
+
+        // Set up default blend state if missing
+        if (!pso.blendState) {
+            pso.blendState = {};
+        }
+        if (!pso.blendState.renderTargetBlendStates) {
+            pso.blendState.renderTargetBlendStates = [];
+        }
+
+        (function () {
+            var i = 0;
+            var maxRenderTargets = 1;
+
+            while (i < maxRenderTargets) {
+                if (!pso.blendState.renderTargetBlendStates[i]) {
+                    pso.blendState.renderTargetBlendStates[i] = {};
+                }
+
+                i += 1;
+            }
+
+            if (pso.blendState.renderTargetBlendStates.length > maxRenderTargets) {
+                throw "WebGL only supports " + maxRenderTargets + " render target" + (maxRenderTargets > 1 ? "s" : "") + ".";
+            }
+        }());
+
+        pso.blendState.renderTargetBlendStates.forEach(function (renderTargetBlendState) {
+            var i;
+
+            if (!renderTargetBlendState.renderTargetWriteMask) {
+                renderTargetBlendState.renderTargetWriteMask = [];
+            }
+
+            i = 0;
+            while (i < 4) {
+                if (typeof(renderTargetBlendState.renderTargetWriteMask[i]) === 'undefined') {
+                    renderTargetBlendState.renderTargetWriteMask[i] = true;
+                }
+                i += 1;
+            }
+        });
+
+        pso.wasBuilt = true;
     });
 };
 
@@ -240,20 +412,60 @@ WebGLBasic.createInterpreter = function (gl) {
         gl.clear(gl.DEPTH_BUFFER_BIT);
     };
 
+    interpreter.clearStencil = function (stencil) {
+        gl.clearStencil(stencil);
+        gl.clear(gl.STENCIL_BUFFER_BIT);
+    };
+
     interpreter.setPipelineState = function (pso) {
         gl.useProgram(pso.program);
 
-        if (pso.depthStencilState) {
-            if (pso.depthStencilState.depthEnable) {
+        // Set rasterizer state
+        (function () {
+            var rs = pso.rasterizerState;
+
+            if (rs.cullEnable) {
+                gl.enable(gl.CULL_FACE);
+            } else {
+                gl.disable(gl.CULL_FACE);
+            }
+
+            gl.cullFace(rs.cullMode);
+        }());
+
+        // Set depth stencil state
+        (function () {
+            var dss = pso.depthStencilState;
+
+            if (dss.depthEnable) {
                 gl.enable(gl.DEPTH_TEST);
-                gl.depthFunc(pso.depthStencilState.depthFunc);
             } else {
                 gl.disable(gl.DEPTH_TEST);
             }
-        } else {
-            gl.disable(gl.DEPTH_TEST);
-            gl.disable(gl.STENCIL_TEST);
-        }
+
+            gl.depthFunc(dss.depthFunc);
+            gl.depthMask(dss.depthMask);
+
+            if (dss.stencilEnable) {
+                gl.enable(gl.STENCIL_TEST);
+            } else {
+                gl.disable(gl.STENCIL_TEST);
+            }
+
+            gl.stencilMask(dss.stencilWriteMask);
+            gl.stencilFuncSeparate(gl.FRONT, dss.frontFace.stencilFunc, dss.frontFace.stencilRef, dss.frontFace.stencilReadMask);
+            gl.stencilFuncSeparate(gl.BACK, dss.backFace.stencilFunc, dss.backFace.stencilRef, dss.backFace.stencilReadMask);
+            gl.stencilOpSeparate(gl.FRONT, dss.frontFace.stencilFailOp, dss.frontFace.stencilDepthFailOp, dss.frontFace.stencilPassOp);
+            gl.stencilOpSeparate(gl.BACK, dss.backFace.stencilFailOp, dss.backFace.stencilDepthFailOp, dss.backFace.stencilPassOp);
+        }());
+
+        // Set blend state
+        (function () {
+            pso.blendState.renderTargetBlendStates.forEach(function (renderTargetBlendState, renderTargetIndex) {
+                var writeMask = renderTargetBlendState.renderTargetWriteMask;
+                gl.colorMask(writeMask[0], writeMask[1], writeMask[2], writeMask[3]);
+            });
+        }());
 
         interpreter.pso = pso;
     };

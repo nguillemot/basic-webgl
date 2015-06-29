@@ -91,21 +91,38 @@ WebGLBasicTest.createTargets = function (gl, width, height) {
 
     targets = {};
 
-    targets.color = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, targets.color);
+    targets.scene = {};
+
+    targets.scene.color = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, targets.scene.color);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    targets.depth = gl.createRenderbuffer();
-    gl.bindRenderbuffer(gl.RENDERBUFFER, targets.depth);
+    targets.scene.depth = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, targets.scene.depth);
     gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
 
-    targets.scenePassFBO = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, targets.scenePassFBO);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, targets.color, 0);
-    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, targets.depth);
+    targets.scene.framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targets.scene.framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, targets.scene.color, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, targets.scene.depth);
+    framebufferStatus = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    if (framebufferStatus !== gl.FRAMEBUFFER_COMPLETE) {
+        throw "checkFramebufferStatus failed: " + WebGLDebugUtils.glEnumToString(framebufferStatus);
+    }
+
+    targets.mirror = {};
+
+    targets.mirror.depthStencil = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, targets.mirror.depthStencil);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_STENCIL, width, height);
+
+    targets.mirror.framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targets.mirror.framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, targets.scene.color, 0);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, targets.mirror.depthStencil);
     framebufferStatus = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
     if (framebufferStatus !== gl.FRAMEBUFFER_COMPLETE) {
         throw "checkFramebufferStatus failed: " + WebGLDebugUtils.glEnumToString(framebufferStatus);
@@ -208,6 +225,57 @@ WebGLBasicTest.createPipelineStates = function (gl) {
                 stride: 0,
                 offset: 0
             }
+        }
+    };
+
+    psos.mirror = {
+        rootSignature: {
+            rootParameters: {
+                modelWorld: {
+                    semanticName: "MODELWORLD"
+                },
+                worldView: {
+                    semanticName: "WORLDVIEW"
+                },
+                viewProjection: {
+                    semanticName: "VIEWPROJECTION"
+                },
+            }
+        },
+        vs: "" +
+                "uniform highp mat4 MODELWORLD;\n" +
+                "uniform highp mat4 WORLDVIEW;\n" +
+                "uniform highp mat4 VIEWPROJECTION;\n" +
+                "attribute highp vec3 POSITION;\n" +
+                "void main() {\n" +
+                "    mat4 modelViewProjection = VIEWPROJECTION * WORLDVIEW * MODELWORLD;\n" +
+                "    gl_Position = modelViewProjection * vec4(POSITION, 1.0);\n" +
+                "}\n",
+        fs: "" +
+                "void main() {\n" +
+                "}\n",
+        rasterizerState: {
+            cullEnable: false, // to test initially
+            cullMode: gl.BACK,
+        },
+        depthStencilState: {
+            stencilEnable: true,
+            stencilWriteMask: 0xFFFFFFFF,
+            frontFace: {
+                stencilFunc: gl.ALWAYS,
+                stencilFailOp: gl.KEEP,
+                stencilDepthFailOp: gl.KEEP,
+                stencilPassOp: gl.ZERO,
+                stencilRef: 0,
+                stencilReadMask: 0xFFFFFFFF
+            }
+        },
+        blendState: {
+            renderTargetBlendStates: [
+                {
+                    renderTargetWriteMask: [false, false, false, false]
+                }
+            ]
         }
     };
 
@@ -390,11 +458,12 @@ WebGLBasicTest.createCamera = function () {
 
 WebGLBasicTest.createPasses = function (gl, scene) {
     var scenePass;
+    var mirrorStencilPass;
     var blitPass;
 
     scenePass = {
         commandList: [
-            ["setFramebuffer", scene.targets.scenePassFBO],
+            ["setFramebuffer", scene.targets.scene.framebuffer],
             ["clearColor", [1.0, 1.0, 1.0, 1.0]],
             ["clearDepth", 1.0],
             ["setPipelineState", scene.psos.scene],
@@ -415,6 +484,22 @@ WebGLBasicTest.createPasses = function (gl, scene) {
         ]
     };
 
+    mirrorStencilPass = {
+        commandList: [
+            ["setFramebuffer", scene.targets.mirror.framebuffer],
+            ["clearStencil", 1],
+            ["setPipelineState", scene.psos.mirror],
+            ["setRootUniforms", {
+                worldView: scene.camera.worldView,
+                viewProjection: scene.camera.viewProjection,
+            }],
+            ["setRootUniforms", {
+                modelWorld: scene.nodes.floor.transform,
+            }],
+            ["drawNodes", [scene.nodes.floor]]
+        ]
+    };
+
     blitPass = {
         commandList: [
             ["setFramebuffer", null],
@@ -423,7 +508,7 @@ WebGLBasicTest.createPasses = function (gl, scene) {
                 {
                     textureImageUnit: 0,
                     target: gl.TEXTURE_2D,
-                    texture: scene.targets.color,
+                    texture: scene.targets.scene.color,
                     sampler: scene.samplers.blit
                 }
             ]],

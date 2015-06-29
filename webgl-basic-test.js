@@ -1,10 +1,5 @@
-"use strict";
-
-var alert, document, setInterval;
 var WebGLBasic;
 var WebGLDebugUtils;
-
-var Uint8Array, Uint16Array, Float32Array;
 
 var WebGLBasicTest = {};
 
@@ -100,29 +95,14 @@ WebGLBasicTest.createTargets = function (gl, width, height) {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    targets.scene.depth = gl.createRenderbuffer();
-    gl.bindRenderbuffer(gl.RENDERBUFFER, targets.scene.depth);
-    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT16, width, height);
+    targets.scene.depthStencil = gl.createRenderbuffer();
+    gl.bindRenderbuffer(gl.RENDERBUFFER, targets.scene.depthStencil);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_STENCIL, width, height);
 
     targets.scene.framebuffer = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, targets.scene.framebuffer);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, targets.scene.color, 0);
-    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, targets.scene.depth);
-    framebufferStatus = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
-    if (framebufferStatus !== gl.FRAMEBUFFER_COMPLETE) {
-        throw "checkFramebufferStatus failed: " + WebGLDebugUtils.glEnumToString(framebufferStatus);
-    }
-
-    targets.mirror = {};
-
-    targets.mirror.depthStencil = gl.createRenderbuffer();
-    gl.bindRenderbuffer(gl.RENDERBUFFER, targets.mirror.depthStencil);
-    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_STENCIL, width, height);
-
-    targets.mirror.framebuffer = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, targets.mirror.framebuffer);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, targets.scene.color, 0);
-    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, targets.mirror.depthStencil);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_STENCIL_ATTACHMENT, gl.RENDERBUFFER, targets.scene.depthStencil);
     framebufferStatus = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
     if (framebufferStatus !== gl.FRAMEBUFFER_COMPLETE) {
         throw "checkFramebufferStatus failed: " + WebGLDebugUtils.glEnumToString(framebufferStatus);
@@ -210,7 +190,7 @@ WebGLBasicTest.createPipelineStates = function (gl) {
         fs: "" +
                 "uniform lowp vec4 COLOR;\n" +
                 "void main() {\n" +
-                "    gl_FragColor = vec4((gl_FragCoord.z * gl_FragCoord.w * COLOR.rgb), 1.0);\n" +
+                "    gl_FragColor = vec4((gl_FragCoord.z * gl_FragCoord.w * COLOR.rgb), COLOR.a);\n" +
                 "}\n",
         depthStencilState: {
             depthEnable: true,
@@ -228,7 +208,7 @@ WebGLBasicTest.createPipelineStates = function (gl) {
         }
     };
 
-    psos.mirror = {
+    psos.mirrorMask = {
         rootSignature: {
             rootParameters: {
                 modelWorld: {
@@ -239,7 +219,7 @@ WebGLBasicTest.createPipelineStates = function (gl) {
                 },
                 viewProjection: {
                     semanticName: "VIEWPROJECTION"
-                },
+                }
             }
         },
         vs: "" +
@@ -254,20 +234,16 @@ WebGLBasicTest.createPipelineStates = function (gl) {
         fs: "" +
                 "void main() {\n" +
                 "}\n",
-        rasterizerState: {
-            cullEnable: false, // to test initially
-            cullMode: gl.BACK,
-        },
         depthStencilState: {
+            depthEnable: true,
+            depthFunc: gl.LEQUAL,
+            depthMask: false,
             stencilEnable: true,
-            stencilWriteMask: 0xFFFFFFFF,
             frontFace: {
-                stencilFunc: gl.ALWAYS,
-                stencilFailOp: gl.KEEP,
-                stencilDepthFailOp: gl.KEEP,
-                stencilPassOp: gl.ZERO,
-                stencilRef: 0,
-                stencilReadMask: 0xFFFFFFFF
+                stencilPassOp: gl.REPLACE
+            },
+            backFace: {
+                stencilPassOp: gl.REPLACE
             }
         },
         blendState: {
@@ -276,7 +252,34 @@ WebGLBasicTest.createPipelineStates = function (gl) {
                     renderTargetWriteMask: [false, false, false, false]
                 }
             ]
+        },
+        inputLayout: {
+            POSITION: psos.scene.inputLayout.POSITION
         }
+    };
+
+    psos.reflectedScene = Object.create(psos.scene);
+    psos.reflectedScene.depthStencilState = {
+        depthEnable: true,
+        depthFunc: gl.LEQUAL,
+        stencilEnable: true,
+        frontFace: {
+            stencilFunc: gl.EQUAL
+        },
+        backFace: {
+            stencilFunc: gl.EQUAL
+        }
+    };
+
+    psos.mirror = Object.create(psos.scene);
+    psos.mirror.blendState = {
+        renderTargetBlendStates: [
+            {
+                blendEnable: true,
+                srcBlend: gl.SRC_ALPHA,
+                destBlend: gl.ONE_MINUS_SRC_ALPHA
+            }
+        ]
     };
 
     psos.blit = {
@@ -458,11 +461,11 @@ WebGLBasicTest.createCamera = function () {
 
 WebGLBasicTest.createPasses = function (gl, scene) {
     var scenePass;
-    var mirrorStencilPass;
     var blitPass;
 
     scenePass = {
         commandList: [
+            // Draw the scene normally
             ["setFramebuffer", scene.targets.scene.framebuffer],
             ["clearColor", [1.0, 1.0, 1.0, 1.0]],
             ["clearDepth", 1.0],
@@ -476,25 +479,40 @@ WebGLBasicTest.createPasses = function (gl, scene) {
                 modelWorld: scene.nodes.cube.transform
             }],
             ["drawNodes", [scene.nodes.cube]],
-            ["setRootUniforms", {
-                modelWorld: scene.nodes.floor.transform,
-                tintColor: new Float32Array([0.5, 0.5, 0.5, 1.0])
-            }],
-            ["drawNodes", [scene.nodes.floor]]
-        ]
-    };
-
-    mirrorStencilPass = {
-        commandList: [
-            ["setFramebuffer", scene.targets.mirror.framebuffer],
+            // Draw the mirror into the stencil
             ["clearStencil", 1],
+            ["setPipelineState", scene.psos.mirrorMask],
+            ["setRootUniforms", {
+                worldView: scene.camera.worldView,
+                viewProjection: scene.camera.viewProjection
+            }],
+            ["setRootUniforms", {
+                modelWorld: scene.nodes.floor.transform
+            }],
+            ["drawNodes", [scene.nodes.floor]],
+            // Draw the scene again but flipped and stencil masked
+            ["setPipelineState", scene.psos.reflectedScene],
+            ["setRootUniforms", {
+                worldView: function () {
+                    var flip = WebGLBasic.makeScale4x4(1, 1, -1);
+                    return WebGLBasic.multMat4(scene.camera.worldView, flip);
+                },
+                viewProjection: scene.camera.viewProjection,
+                tintColor: new Float32Array([0.0, 0.0, 1.0, 1.0])
+            }],
+            ["setRootUniforms", {
+                modelWorld: scene.nodes.cube.transform
+            }],
+            ["drawNodes", [scene.nodes.cube]],
+            // Now draw the mirror's surface
             ["setPipelineState", scene.psos.mirror],
             ["setRootUniforms", {
                 worldView: scene.camera.worldView,
                 viewProjection: scene.camera.viewProjection,
+                tintColor: new Float32Array([1.0, 0.5, 0.5, 0.9])
             }],
             ["setRootUniforms", {
-                modelWorld: scene.nodes.floor.transform,
+                modelWorld: scene.nodes.floor.transform
             }],
             ["drawNodes", [scene.nodes.floor]]
         ]
@@ -525,28 +543,59 @@ WebGLBasicTest.createPasses = function (gl, scene) {
     ];
 };
 
-WebGLBasicTest.updateScene = function (scene, currentTime) {
+WebGLBasicTest.updateScene = function (scene, currentTimeMs) {
     var canvas;
-    var camera;
-    var dtms, dt;
-    var camRotate;
-    var fovy;
+    var dtms, dt, currentTimeS;
 
     canvas = scene.canvas;
-    camera = scene.camera;
 
+    // Compute delta-time
     dtms = 0;
-    if (scene.lastUpdateTime) {
-        dtms = currentTime - scene.lastUpdateTime;
+    if (scene.lastUpdateTimeMs) {
+        dtms = currentTimeMs - scene.lastUpdateTimeMs;
     }
-    scene.lastUpdateTime = currentTime;
+    scene.lastUpdateTimeMs = currentTimeMs;
     dt = dtms / 1000.0;
+    currentTimeS = currentTimeMs / 1000.0;
 
-    camRotate = WebGLBasic.makeRotate3x3(WebGLBasic.degToRad(dt * 90), [0, 0, 1]);
-    camera.worldPosition = WebGLBasic.multMat3Vec3(camRotate, camera.worldPosition);
+    // Update camera
+    (function () {
+        var camRotate;
+        var camera = scene.camera;
 
-    camera.worldView.set(WebGLBasic.makeLookAt(camera.worldPosition, [0, 0, 0], [0, 0, 1]));
+        camRotate = WebGLBasic.makeRotate3x3(WebGLBasic.degToRad(dt * 20), [0, 0, 1]);
+        camera.worldPosition = WebGLBasic.multMat3Vec3(camRotate, camera.worldPosition);
 
-    fovy = WebGLBasic.degToRad(70.0);
-    camera.viewProjection.set(WebGLBasic.makePerspective(fovy, canvas.width / canvas.height, 0.1, 1000.0));
+        camera.worldView.set(WebGLBasic.makeLookAt(camera.worldPosition, [0, 0, 0], [0, 0, 1]));
+
+        camera.viewProjection.set(
+            WebGLBasic.makePerspective(
+                WebGLBasic.degToRad(70.0),
+                canvas.width / canvas.height,
+                0.1,
+                1000.0
+            )
+        );
+    }());
+
+    // Update cube
+    (function () {
+        var cubePosition;
+
+        if (!scene.nodes.cube.modelTransform) {
+            scene.nodes.cube.modelTransform = new Float32Array(scene.nodes.cube.transform);
+        }
+
+        cubePosition = [2.3 * Math.cos(currentTimeS), 2.3 * Math.sin(currentTimeS), 0];
+
+        scene.nodes.cube.transform.set(
+            WebGLBasic.multMat4(
+                WebGLBasic.makeTranslate4x4(cubePosition[0], cubePosition[1], cubePosition[2]),
+                WebGLBasic.multMat4(
+                    WebGLBasic.makeRotate4x4(currentTimeS, [0, 0, 1]),
+                    scene.nodes.cube.modelTransform
+                )
+            )
+        );
+    }());
 };

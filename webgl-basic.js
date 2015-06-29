@@ -1,5 +1,3 @@
-"use strict";
-
 var WebGLBasic = {};
 
 WebGLBasic.buildPipelineStates = function (gl, psos) {
@@ -8,7 +6,7 @@ WebGLBasic.buildPipelineStates = function (gl, psos) {
 
         pso = psos[psoName];
 
-        if (pso.wasBuilt) {
+        if (pso.hasOwnProperty('wasBuilt') && pso.wasBuilt) {
             throw "Pipeline state object " + psoName + " has already been built once.";
         }
 
@@ -249,6 +247,34 @@ WebGLBasic.buildPipelineStates = function (gl, psos) {
         pso.blendState.renderTargetBlendStates.forEach(function (renderTargetBlendState) {
             var i;
 
+            if (typeof(renderTargetBlendState.blendEnable) === 'undefined') {
+                renderTargetBlendState.blendEnable = false;
+            }
+
+            if (typeof(renderTargetBlendState.srcBlend) === 'undefined') {
+                renderTargetBlendState.srcBlend = gl.ONE;
+            }
+
+            if (typeof(renderTargetBlendState.destBlend) === 'undefined') {
+                renderTargetBlendState.destBlend = gl.ZERO;
+            }
+
+            if (typeof(renderTargetBlendState.blendOp) === 'undefined') {
+                renderTargetBlendState.blendOp = gl.FUNC_ADD;
+            }
+
+            if (typeof(renderTargetBlendState.srcBlendAlpha) === 'undefined') {
+                renderTargetBlendState.srcBlendAlpha = gl.ONE;
+            }
+
+            if (typeof(renderTargetBlendState.destBlendAlpha) === 'undefined') {
+                renderTargetBlendState.destBlendAlpha = gl.ZERO;
+            }
+
+            if (typeof(renderTargetBlendState.blendOpAlpha) === 'undefined') {
+                renderTargetBlendState.blendOpAlpha = gl.FUNC_ADD;
+            }
+
             if (!renderTargetBlendState.renderTargetWriteMask) {
                 renderTargetBlendState.renderTargetWriteMask = [];
             }
@@ -327,6 +353,27 @@ WebGLBasic.makeRotate4x4 = function (angle, axis) {
         r3x3[3], r3x3[4], r3x3[5], 0,
         r3x3[6], r3x3[7], r3x3[8], 0,
         0, 0, 0, 1
+    ];
+};
+
+WebGLBasic.multMat4 = function (a, b) {
+    return [
+        a[0] * b[0] + a[4] * b[1] + a[8] * b[2] + a[12] * b[3],
+        a[1] * b[0] + a[5] * b[1] + a[9] * b[2] + a[13] * b[3],
+        a[2] * b[0] + a[6] * b[1] + a[10] * b[2] + a[14] * b[3],
+        a[3] * b[0] + a[7] * b[1] + a[11] * b[2] + a[15] * b[3],
+        a[0] * b[4] + a[4] * b[5] + a[8] * b[6] + a[12] * b[7],
+        a[1] * b[4] + a[5] * b[5] + a[9] * b[6] + a[13] * b[7],
+        a[2] * b[4] + a[6] * b[5] + a[10] * b[6] + a[14] * b[7],
+        a[3] * b[4] + a[7] * b[5] + a[11] * b[6] + a[15] * b[7],
+        a[0] * b[8] + a[4] * b[9] + a[8] * b[10] + a[12] * b[11],
+        a[1] * b[8] + a[5] * b[9] + a[9] * b[10] + a[13] * b[11],
+        a[2] * b[8] + a[6] * b[9] + a[10] * b[10] + a[14] * b[11],
+        a[3] * b[8] + a[7] * b[9] + a[11] * b[10] + a[15] * b[11],
+        a[0] * b[12] + a[4] * b[13] + a[8] * b[14] + a[12] * b[15],
+        a[1] * b[12] + a[5] * b[13] + a[9] * b[14] + a[13] * b[15],
+        a[2] * b[12] + a[6] * b[13] + a[10] * b[14] + a[14] * b[15],
+        a[3] * b[12] + a[7] * b[13] + a[11] * b[14] + a[15] * b[15],
     ];
 };
 
@@ -417,6 +464,10 @@ WebGLBasic.createInterpreter = function (gl) {
         gl.clear(gl.STENCIL_BUFFER_BIT);
     };
 
+    interpreter.setBlendColor = function (color) {
+        gl.blendColor(color[0], color[1], color[2], color[3]);
+    };
+
     interpreter.setPipelineState = function (pso) {
         gl.useProgram(pso.program);
 
@@ -462,7 +513,18 @@ WebGLBasic.createInterpreter = function (gl) {
         // Set blend state
         (function () {
             pso.blendState.renderTargetBlendStates.forEach(function (renderTargetBlendState, renderTargetIndex) {
-                var writeMask = renderTargetBlendState.renderTargetWriteMask;
+                var rtbs = renderTargetBlendState;
+
+                if (rtbs.blendEnable) {
+                    gl.enable(gl.BLEND);
+                } else {
+                    gl.disable(gl.BLEND);
+                }
+
+                gl.blendFuncSeparate(rtbs.srcBlend, rtbs.destBlend, rtbs.srcBlendAlpha, rtbs.destBlendAlpha);
+                gl.blendEquationSeparate(rtbs.blendOp, rtbs.blendOpAlpha);
+
+                var writeMask = rtbs.renderTargetWriteMask;
                 gl.colorMask(writeMask[0], writeMask[1], writeMask[2], writeMask[3]);
             });
         }());
@@ -477,6 +539,9 @@ WebGLBasic.createInterpreter = function (gl) {
             uniformInfo = interpreter.pso.rootParameterSlotToUniform[rootParameterSlot];
             uniformLocation = uniformInfo.location;
             uniformValue = rootUniforms[rootParameterSlot];
+            if (typeof(uniformValue) === 'function') {
+                uniformValue = uniformValue();
+            }
 
             switch (uniformInfo.type) {
             case gl.FLOAT:

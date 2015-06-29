@@ -6,6 +6,7 @@ WebGLBasic.buildPipelineStates = function (gl, psos) {
     Object.keys(psos).forEach(function (psoName) {
         var pso;
         var vs, fs;
+        var activeAttributeIndex, activeAttribute, attributeLocation;
         var activeUniformIndex, activeUniform, uniformLocation;
 
         pso = psos[psoName];
@@ -32,33 +33,64 @@ WebGLBasic.buildPipelineStates = function (gl, psos) {
             throw "Error linking program: " + gl.getProgramInfoLog(pso.program);
         }
 
+        pso.attributes = {};
+        activeAttributeIndex = gl.getProgramParameter(pso.program, gl.ACTIVE_ATTRIBUTES) - 1;
+        while (activeAttributeIndex >= 0) {
+            activeAttribute = gl.getActiveAttrib(pso.program, activeAttributeIndex);
+            attributeLocation = gl.getAttribLocation(pso.program, activeAttribute.name);
+            pso.attributes[activeAttribute.name] = {
+                name: activeAttribute.name,
+                size: activeAttribute.size,
+                type: activeAttribute.type,
+                location: attributeLocation
+            };
+            activeAttributeIndex -= 1;
+        }
+
+        pso.attributeLocationsForInputSlot = {};
+        pso.attributeLocationToAttribute = {};
+        if (pso.inputLayout) {
+            Object.keys(pso.inputLayout).forEach(function (semanticName) {
+                var inputAttribute, inputAttributeLocation;
+
+                inputAttribute = pso.inputLayout[semanticName];
+                inputAttributeLocation = gl.getAttribLocation(pso.program, semanticName);
+                if (inputAttributeLocation !== -1) {
+                    if (!pso.attributeLocationsForInputSlot[inputAttribute.inputSlot]) {
+                        pso.attributeLocationsForInputSlot[inputAttribute.inputSlot] = [];
+                    }
+                    pso.attributeLocationsForInputSlot[inputAttribute.inputSlot].push(inputAttributeLocation);
+                    pso.attributeLocationToAttribute[inputAttributeLocation] = inputAttribute;
+                }
+            });
+        }
+
         pso.uniforms = {};
-        pso.samplers = {};
         activeUniformIndex = gl.getProgramParameter(pso.program, gl.ACTIVE_UNIFORMS) - 1;
         while (activeUniformIndex >= 0) {
             activeUniform = gl.getActiveUniform(pso.program, activeUniformIndex);
             uniformLocation = gl.getUniformLocation(pso.program, activeUniform.name);
-            if (activeUniform.type === gl.SAMPLER_2D || activeUniform.type === gl.SAMPLER_CUBE) {
-                pso.samplers[activeUniform.name] = {
-                    name: activeUniform.name,
-                    size: activeUniform.size,
-                    type: activeUniform.type,
-                    location: uniformLocation
-                };
-            } else {
-                pso.uniforms[activeUniform.name] = {
-                    name: activeUniform.name,
-                    size: activeUniform.size,
-                    type: activeUniform.type,
-                    location: uniformLocation
-                };
-            }
+            pso.uniforms[activeUniform.name] = {
+                name: activeUniform.name,
+                size: activeUniform.size,
+                type: activeUniform.type,
+                location: uniformLocation
+            };
             activeUniformIndex -= 1;
         }
 
         pso.rootParameterSlotToUniform = {};
-        pso.rootParameterSlotToSampler = {};
+        if (pso.rootSignature) {
+            Object.keys(pso.rootSignature.rootParameters).forEach(function (rootParameterSlot) {
+                var rootParameter, rootParameterName;
+                var uniformInfo;
 
+                rootParameter = pso.rootSignature.rootParameters[rootParameterSlot];
+                rootParameterName = rootParameter.semanticName;
+                uniformInfo = pso.uniforms[rootParameterName];
+                pso.rootParameterSlotToUniform[rootParameterSlot] = uniformInfo;
+            });
+        }
     });
 };
 
@@ -211,43 +243,6 @@ WebGLBasic.createInterpreter = function (gl) {
     interpreter.setPipelineState = function (pso) {
         gl.useProgram(pso.program);
 
-        if (pso.inputLayout) {
-            interpreter.attributeLocationsForInputSlot = {};
-            interpreter.attributeLocationToAttribute = {};
-            Object.keys(pso.inputLayout).forEach(function (semanticName) {
-                var inputAttribute, inputAttributeLocation;
-
-                inputAttribute = pso.inputLayout[semanticName];
-                inputAttributeLocation = gl.getAttribLocation(pso.program, semanticName);
-                if (inputAttributeLocation !== -1) {
-                    if (!interpreter.attributeLocationsForInputSlot[inputAttribute.inputSlot]) {
-                        interpreter.attributeLocationsForInputSlot[inputAttribute.inputSlot] = [];
-                    }
-                    interpreter.attributeLocationsForInputSlot[inputAttribute.inputSlot].push(inputAttributeLocation);
-                    interpreter.attributeLocationToAttribute[inputAttributeLocation] = inputAttribute;
-                }
-            });
-        }
-
-        if (pso.rootSignature) {
-            interpreter.rootParameterSlotToUniform = {};
-            interpreter.rootParameterSlotToSampler = {};
-            Object.keys(pso.rootSignature.rootParameters).forEach(function (rootParameterSlot) {
-                var rootParameter, rootParameterName;
-                var uniformInfo, samplerInfo;
-
-                rootParameter = pso.rootSignature.rootParameters[rootParameterSlot];
-                rootParameterName = rootParameter.semanticName;
-                if (rootParameter.type === "uniform") {
-                    uniformInfo = pso.uniforms[rootParameterName];
-                    interpreter.rootParameterSlotToUniform[rootParameterSlot] = uniformInfo;
-                } else if (rootParameter.type === "sampler") {
-                    samplerInfo = pso.samplers[rootParameterName];
-                    interpreter.rootParameterSlotToSampler[rootParameterSlot] = samplerInfo;
-                }
-            });
-        }
-
         if (pso.depthStencilState) {
             if (pso.depthStencilState.depthEnable) {
                 gl.enable(gl.DEPTH_TEST);
@@ -259,21 +254,81 @@ WebGLBasic.createInterpreter = function (gl) {
             gl.disable(gl.DEPTH_TEST);
             gl.disable(gl.STENCIL_TEST);
         }
+
+        interpreter.pso = pso;
     };
 
     interpreter.setRootUniforms = function (rootUniforms) {
         Object.keys(rootUniforms).forEach(function (rootParameterSlot) {
             var uniformInfo, uniformLocation, uniformValue;
 
-            uniformInfo = interpreter.rootParameterSlotToUniform[rootParameterSlot];
+            uniformInfo = interpreter.pso.rootParameterSlotToUniform[rootParameterSlot];
             uniformLocation = uniformInfo.location;
             uniformValue = rootUniforms[rootParameterSlot];
+
             switch (uniformInfo.type) {
+            case gl.FLOAT:
+                if (typeof(uniformValue) === 'number') {
+                    gl.uniform1f(uniformLocation, uniformValue);
+                } else {
+                    gl.uniform1fv(uniformLocation, uniformValue);
+                }
+                break;
+            case gl.FLOAT_VEC2:
+                gl.uniform2fv(uniformLocation, uniformValue);
+                break;
+            case gl.FLOAT_VEC3:
+                gl.uniform3fv(uniformLocation, uniformValue);
+                break;
             case gl.FLOAT_VEC4:
                 gl.uniform4fv(uniformLocation, uniformValue);
                 break;
+            case gl.FLOAT_MAT2:
+                gl.uniformMatrix2fv(uniformLocation, false, uniformValue);
+                break;
+            case gl.FLOAT_MAT3:
+                gl.uniformMatrix3fv(uniformLocation, false, uniformValue);
+                break;
             case gl.FLOAT_MAT4:
                 gl.uniformMatrix4fv(uniformLocation, false, uniformValue);
+                break;
+            case gl.INT:
+                if (typeof(uniformValue) === 'number') {
+                    gl.uniform1i(uniformLocation, uniformValue);
+                } else {
+                    gl.uniform1iv(uniformLocation, uniformValue);
+                }
+                break;
+            case gl.INT_VEC2:
+                gl.uniform2iv(uniformLocation, uniformValue);
+                break;
+            case gl.INT_VEC3:
+                gl.uniform3iv(uniformLocation, uniformValue);
+                break;
+            case gl.INT_VEC4:
+                gl.uniform4iv(uniformLocation, uniformValue);
+                break;
+            case gl.BOOL:
+                if (typeof(uniformValue) === 'boolean' || typeof(uniformValue) === 'number') {
+                    gl.uniform1i(uniformLocation, uniformValue);
+                } else {
+                    gl.uniform1iv(uniformLocation, uniformValue);
+                }
+                break;
+            case gl.BOOL_VEC2:
+                gl.uniform2iv(uniformLocation, uniformValue);
+                break;
+            case gl.BOOL_VEC3:
+                gl.uniform3iv(uniformLocation, uniformValue);
+                break;
+            case gl.BOOL_VEC4:
+                gl.uniform4iv(uniformLocation, uniformValue);
+                break;
+            case gl.SAMPLER_2D:
+                gl.uniform1i(uniformLocation, uniformValue);
+                break;
+            case gl.SAMPLER_CUBE:
+                gl.uniform1i(uniformLocation, uniformValue);
                 break;
             default:
                 throw "Unhandled uniform type: " + uniformInfo.type;
@@ -282,63 +337,44 @@ WebGLBasic.createInterpreter = function (gl) {
     };
 
     interpreter.setActiveTextures = function (activeTextures) {
-        Object.keys(activeTextures).forEach(function (textureImageUnit) {
-            var textureInfo;
-
-            textureInfo = activeTextures[textureImageUnit];
-            gl.activeTexture(gl["TEXTURE" + textureImageUnit]);
+        activeTextures.forEach(function (textureInfo) {
+            gl.activeTexture(gl.TEXTURE0 + textureInfo.textureImageUnit);
             gl.bindTexture(textureInfo.target, textureInfo.texture);
-            gl.texParameteri(textureInfo.target, gl.TEXTURE_MIN_FILTER, textureInfo.sampler.minFilter);
-            gl.texParameteri(textureInfo.target, gl.TEXTURE_MAG_FILTER, textureInfo.sampler.magFilter);
-            gl.texParameteri(textureInfo.target, gl.TEXTURE_WRAP_S, textureInfo.sampler.wrapS);
-            gl.texParameteri(textureInfo.target, gl.TEXTURE_WRAP_T, textureInfo.sampler.wrapT);
-        });
-    };
-
-    interpreter.setRootSamplers = function (rootSamplers) {
-        Object.keys(rootSamplers).forEach(function (rootSamplerSlot) {
-            var samplerInfo, samplerLocation, samplerValue;
-
-            samplerInfo = interpreter.rootParameterSlotToSampler[rootSamplerSlot];
-            samplerLocation = samplerInfo.location;
-            samplerValue = rootSamplers[rootSamplerSlot];
-            gl.uniform1i(samplerLocation, samplerValue);
+            if (textureInfo.sampler) {
+                gl.texParameteri(textureInfo.target, gl.TEXTURE_MIN_FILTER, textureInfo.sampler.minFilter);
+                gl.texParameteri(textureInfo.target, gl.TEXTURE_MAG_FILTER, textureInfo.sampler.magFilter);
+                gl.texParameteri(textureInfo.target, gl.TEXTURE_WRAP_S, textureInfo.sampler.wrapS);
+                gl.texParameteri(textureInfo.target, gl.TEXTURE_WRAP_T, textureInfo.sampler.wrapT);
+            }
         });
     };
 
     interpreter.drawNodes = function (nodeList) {
         nodeList.forEach(function (node) {
-            if (node.vertexBufferViews) {
-                Object.keys(node.vertexBufferViews).forEach(function (slotIndex) {
-                    var vbv;
-                    var attributeLocations;
+            Object.keys(interpreter.pso.attributes).forEach(function (attributeName) {
+                var attribInfo, inputLayoutAttrib, vbv;
 
-                    vbv = node.vertexBufferViews[slotIndex];
+                attribInfo = interpreter.pso.attributes[attributeName];
+                inputLayoutAttrib = interpreter.pso.inputLayout[attributeName];
+                if (inputLayoutAttrib) {
+                    vbv = node.vertexBufferSlots[inputLayoutAttrib.inputSlot];
                     gl.bindBuffer(gl.ARRAY_BUFFER, vbv.buffer);
+                    gl.vertexAttribPointer(
+                        attribInfo.location,
+                        inputLayoutAttrib.size,
+                        inputLayoutAttrib.type,
+                        inputLayoutAttrib.normalized,
+                        inputLayoutAttrib.stride,
+                        inputLayoutAttrib.offset
+                    );
+                    gl.enableVertexAttribArray(attribInfo.location);
+                } else {
+                    gl.disableVertexAttribArray(attribInfo.location);
+                }
+            });
 
-                    attributeLocations = interpreter.attributeLocationsForInputSlot[slotIndex];
-
-                    attributeLocations.forEach(function (attributeLocation) {
-                        var attribute;
-
-                        attribute = interpreter.attributeLocationToAttribute[attributeLocation];
-
-                        gl.vertexAttribPointer(
-                            attributeLocation,
-                            attribute.size,
-                            attribute.type,
-                            attribute.normalized,
-                            attribute.stride,
-                            attribute.offset
-                        );
-
-                        gl.enableVertexAttribArray(attributeLocation);
-                    });
-                });
-            }
-
-            if (node.indexBufferView) {
-                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, node.indexBufferView.buffer);
+            if (node.indexBufferSlot) {
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, node.indexBufferSlot.buffer);
             }
 
             if (node.drawArgs) {
@@ -353,8 +389,8 @@ WebGLBasic.createInterpreter = function (gl) {
                 gl.drawElements(
                     node.drawIndexedArgs.primitiveTopology,
                     node.drawIndexedArgs.indexCountPerInstance,
-                    node.indexBufferView.type,
-                    node.indexBufferView.offset
+                    node.indexBufferSlot.type,
+                    node.indexBufferSlot.offset
                 );
             }
         });

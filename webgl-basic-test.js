@@ -77,7 +77,7 @@ WebGLBasicTest.createScene = function (canvas, gl) {
     scene.psos = WebGLBasicTest.createPipelineStates(gl);
     scene.nodes = WebGLBasicTest.createNodes(gl);
     scene.camera = WebGLBasicTest.createCamera();
-    scene.passes = WebGLBasicTest.createPasses(scene);
+    scene.passes = WebGLBasicTest.createPasses(gl, scene);
     scene.interpreter = WebGLBasic.createInterpreter(gl);
 
     WebGLBasic.buildPipelineStates(gl, scene.psos);
@@ -167,20 +167,16 @@ WebGLBasicTest.createPipelineStates = function (gl) {
     psos.scene = {
         rootSignature: {
             rootParameters: {
-                '0': {
-                    type: "uniform",
+                modelWorld: {
                     semanticName: "MODELWORLD"
                 },
-                '1': {
-                    type: "uniform",
+                worldView: {
                     semanticName: "WORLDVIEW"
                 },
-                '2': {
-                    type: "uniform",
+                viewProjection: {
                     semanticName: "VIEWPROJECTION"
                 },
-                '3': {
-                    type: "uniform",
+                tintColor: {
                     semanticName: "COLOR"
                 }
             }
@@ -205,7 +201,7 @@ WebGLBasicTest.createPipelineStates = function (gl) {
         },
         inputLayout: {
             POSITION: {
-                inputSlot: 0,
+                inputSlot: "meshVertices",
                 size: 3,
                 type: gl.FLOAT,
                 normalized: false,
@@ -218,8 +214,7 @@ WebGLBasicTest.createPipelineStates = function (gl) {
     psos.blit = {
         rootSignature: {
             rootParameters: {
-                '0': {
-                    type: "sampler",
+                blitSampler: {
                     semanticName: "BLITSAMPLER"
                 }
             }
@@ -227,20 +222,20 @@ WebGLBasicTest.createPipelineStates = function (gl) {
         vs: "" +
                 "attribute lowp vec2 POSITION;\n" +
                 "attribute lowp vec2 TEXCOORD;\n" +
-                "varying lowp vec2 vTexCoord;\n" +
+                "varying lowp vec2 vTEXCOORD;\n" +
                 "void main() {\n" +
                 "    gl_Position = vec4(POSITION, 0.0, 1.0);\n" +
-                "    vTexCoord = TEXCOORD;\n" +
+                "    vTEXCOORD = TEXCOORD;\n" +
                 "}\n",
         fs: "" +
                 "uniform sampler2D BLITSAMPLER;\n" +
-                "varying lowp vec2 vTexCoord;\n" +
+                "varying lowp vec2 vTEXCOORD;\n" +
                 "void main() {\n" +
-                "    gl_FragColor = texture2D(BLITSAMPLER, vTexCoord);\n" +
+                "    gl_FragColor = texture2D(BLITSAMPLER, vTEXCOORD);\n" +
                 "}\n",
         inputLayout: {
             POSITION: {
-                inputSlot: 0,
+                inputSlot: "blitVertices",
                 size: 2,
                 type: gl.FLOAT,
                 normalized: false,
@@ -248,7 +243,7 @@ WebGLBasicTest.createPipelineStates = function (gl) {
                 offset: 0
             },
             TEXCOORD: {
-                inputSlot: 0,
+                inputSlot: "blitVertices",
                 size: 2,
                 type: gl.FLOAT,
                 normalized: false,
@@ -322,13 +317,13 @@ WebGLBasicTest.createNodes = function (gl) {
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, nodes.cube.ebo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, cubeIndices, gl.STATIC_DRAW);
 
-    nodes.cube.vertexBufferViews = {
-        '0': {
+    nodes.cube.vertexBufferSlots = {
+        meshVertices: {
             buffer: nodes.cube.vbo
         }
     };
 
-    nodes.cube.indexBufferView = {
+    nodes.cube.indexBufferSlot = {
         buffer: nodes.cube.ebo,
         type: gl.UNSIGNED_SHORT,
         offset: 0
@@ -347,8 +342,8 @@ WebGLBasicTest.createNodes = function (gl) {
     gl.bindBuffer(gl.ARRAY_BUFFER, nodes.floor.vbo);
     gl.bufferData(gl.ARRAY_BUFFER, floorVertices, gl.STATIC_DRAW);
 
-    nodes.floor.vertexBufferViews = {
-        '0': {
+    nodes.floor.vertexBufferSlots = {
+        meshVertices: {
             buffer: nodes.floor.vbo
         }
     };
@@ -366,8 +361,8 @@ WebGLBasicTest.createNodes = function (gl) {
     gl.bindBuffer(gl.ARRAY_BUFFER, nodes.blit.vbo);
     gl.bufferData(gl.ARRAY_BUFFER, blitVertices, gl.STATIC_DRAW);
 
-    nodes.blit.vertexBufferViews = {
-        '0': {
+    nodes.blit.vertexBufferSlots = {
+        blitVertices: {
             buffer: nodes.blit.vbo
         }
     };
@@ -393,12 +388,9 @@ WebGLBasicTest.createCamera = function () {
     return camera;
 };
 
-WebGLBasicTest.createPasses = function (scene) {
-    var gl;
+WebGLBasicTest.createPasses = function (gl, scene) {
     var scenePass;
     var blitPass;
-
-    gl = scene.gl;
 
     scenePass = {
         commandList: [
@@ -407,17 +399,17 @@ WebGLBasicTest.createPasses = function (scene) {
             ["clearDepth", 1.0],
             ["setPipelineState", scene.psos.scene],
             ["setRootUniforms", {
-                '1': scene.camera.worldView,
-                '2': scene.camera.viewProjection,
-                '3': new Float32Array([0.0, 0.0, 1.0, 1.0])
+                worldView: scene.camera.worldView,
+                viewProjection: scene.camera.viewProjection,
+                tintColor: new Float32Array([0.0, 0.0, 1.0, 1.0])
             }],
             ["setRootUniforms", {
-                '0': scene.nodes.cube.transform
+                modelWorld: scene.nodes.cube.transform
             }],
             ["drawNodes", [scene.nodes.cube]],
             ["setRootUniforms", {
-                '0': scene.nodes.floor.transform,
-                '3': new Float32Array([0.5, 0.5, 0.5, 1.0])
+                modelWorld: scene.nodes.floor.transform,
+                tintColor: new Float32Array([0.5, 0.5, 0.5, 1.0])
             }],
             ["drawNodes", [scene.nodes.floor]]
         ]
@@ -427,15 +419,16 @@ WebGLBasicTest.createPasses = function (scene) {
         commandList: [
             ["setFramebuffer", null],
             ["setPipelineState", scene.psos.blit],
-            ["setActiveTextures", {
-                '0': {
+            ["setActiveTextures", [
+                {
+                    textureImageUnit: 0,
                     target: gl.TEXTURE_2D,
                     texture: scene.targets.color,
                     sampler: scene.samplers.blit
                 }
-            }],
-            ["setRootSamplers", {
-                '0': 0
+            ]],
+            ["setRootUniforms", {
+                blitSampler: 0
             }],
             ["drawNodes", [scene.nodes.blit]]
         ]

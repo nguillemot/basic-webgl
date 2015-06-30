@@ -240,10 +240,10 @@ WebGLBasicTest.createPipelineStates = function (gl) {
             depthMask: false,
             stencilEnable: true,
             frontFace: {
-                stencilPassOp: gl.REPLACE
+                stencilPassOp: gl.ZERO
             },
             backFace: {
-                stencilPassOp: gl.REPLACE
+                stencilPassOp: gl.ZERO
             }
         },
         blendState: {

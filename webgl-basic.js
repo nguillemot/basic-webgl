@@ -377,6 +377,15 @@ WebGLBasic.multMat4 = function (a, b) {
     ];
 };
 
+WebGLBasic.multMat4Vec4 = function (m, v) {
+    return [
+        m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12] * v[3],
+        m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13] * v[3],
+        m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14] * v[3],
+        m[3] * v[0] + m[7] * v[1] + m[11] * v[2] + m[15] * v[3]
+    ];
+};
+
 WebGLBasic.multMat3Vec3 = function (m, v) {
     return [
         m[0] * v[0] + m[3] * v[1] + m[6] * v[2],
@@ -434,6 +443,165 @@ WebGLBasic.makePerspective = function (fovy, aspect, zNear, zFar) {
         0, 0, (zFar + zNear) / (zNear - zFar), -1,
         0, 0, (2 * zFar * zNear) / (zNear - zFar), 0
     ];
+};
+
+WebGLBasic.parseOBJ = function (text) {
+    var lines, currLine;
+    var gs, currG;
+
+    gs = {};
+
+    lines = text.split('\n');
+
+    try {
+        currLine = 0;
+
+        lines.forEach(function (line, lineIdx) {
+            var commentIdx;
+
+            currLine = lineIdx;
+
+            commentIdx = line.indexOf('#');
+            if (commentIdx !== -1) {
+                line = line.substring(0, commentIdx);
+            }
+
+            var tokens = line.match(/\S+/g);
+
+            if (tokens === null) {
+                return;
+            }
+
+            if (tokens[0] === 'g') {
+                (function () {
+                    var gname;
+                    
+                    gname = tokens[1];
+
+                    if (gs[gname]) {
+                        throw "Duplicate name group (" + gname + ")";
+                    }
+
+                    gs[gname] = {};
+                    gs[gname].vs = [];
+                    gs[gname].vsize = 0;
+                    gs[gname].vns = [];
+                    gs[gname].vnsize = 0;
+                    gs[gname].vts = [];
+                    gs[gname].vtsize = 0;
+                    gs[gname].fs = [];
+                    gs[gname].fsize = 3;
+
+                    currG = gname;
+                }());
+            } else if (['v','vt','vn'].indexOf(tokens[0]) !== -1) {
+                (function () {
+                    var g;
+                    var sizevar, datavar;
+                    var number;
+                    var i;
+
+                    g = gs[currG];
+                    if (!g) {
+                        throw "Not currently in group";
+                    }
+
+                    if (
+                        (tokens[0] === 'v' && tokens.length > 5) ||
+                        (tokens[0] === 'vt' && tokens.length > 3) ||
+                        (tokens[0] === 'vn' && tokens.length > 4)
+                    ) {
+                        throw "Too many tokens";
+                    }
+
+                    sizevar = tokens[0] + "size";
+
+                    if (g[sizevar] === 0) {
+                        g[sizevar] = tokens.length - 1;
+                    }
+
+                    datavar = tokens[0] + "s";
+
+                    i = 0;
+                    while (tokens[1 + i]) {
+                        number = parseFloat(tokens[1 + i]);
+                        if (isNaN(number)) {
+                            throw "Couldn't parse number";
+                        }
+
+                        g[datavar].push(number);
+                        i += 1;
+                    }
+
+                    if (i !== g[sizevar]) {
+                        throw "Inconsistent number of elements";
+                    }
+                }());
+            } else if (tokens[0] === 'f') {
+                var g;
+                var i;
+                var indices;
+                var posIdx, texIdx, normIdx;
+
+                g = gs[currG];
+                if (!g) {
+                    throw "Not currently in group";
+                }
+
+                if (tokens.length > 5) {
+                    alert(tokens);
+                    throw "Too many tokens";
+                }
+
+                i = 0;
+                while (tokens[1 + i]) {
+                    indices = tokens[1 + i].split('/');
+                    if (indices.length > 3 || indices.length === 0) {
+                        throw "Invalid vertex indices";
+                    }
+
+                    posIdx = parseInt(indices[0]);
+                    if (isNaN(posIdx)) {
+                        throw "Failed to parse position index";
+                    }
+
+                    if (indices[1] && indices[1].length > 0) {
+                        texIdx = parseInt(indices[1]);
+                        if (isNaN(texIdx)) {
+                            throw "Failed to parse texcoord index";
+                        }
+                    }
+
+                    if (indices[2]) {
+                        normIdx = parseInt(indices[2]);
+                        if (isNaN(normIdx)) {
+                            throw "Failed to parse normal index";
+                        }
+                    }
+
+                    g.fs.push(posIdx);
+                    g.fs.push(texIdx);
+                    g.fs.push(normIdx);
+
+                    i += 1;
+                }
+
+                if (i === 4) {
+                    g.fs.push(g.fs[g.fs.length - 12]);
+                    g.fs.push(g.fs[g.fs.length - 12]);
+                    g.fs.push(g.fs[g.fs.length - 12]);
+
+                    g.fs.push(g.fs[g.fs.length - 9]);
+                    g.fs.push(g.fs[g.fs.length - 9]);
+                    g.fs.push(g.fs[g.fs.length - 9]);
+                }
+            }
+        });
+    } catch (e) {
+        throw "Line " + currLine + ": " + e;
+    }
+
+    return gs;
 };
 
 WebGLBasic.createInterpreter = function (gl) {

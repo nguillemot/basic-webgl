@@ -3,7 +3,7 @@ var WebGLDebugUtils;
 
 var WebGLBasicTest = {};
 
-WebGLBasicTest.debugMode = true;
+WebGLBasicTest.debugMode = false;
 
 WebGLBasicTest.onLoad = function () {
     try {
